@@ -396,11 +396,14 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             immich_info['Country'] = exifinfo['country']
             immich_info['State'] = exifinfo['state']
             immich_info['City'] = exifinfo['city']
-            immich_info['Headline'] = exifinfo['description']
-            # Get more info from the actual file.
-            iptc_info = self._get_iptcinfo(self._get_local_filename_for_image(image))
+            immich_info['Caption'] = exifinfo['description']
+            immich_info['Headline'] = response['originalFileName']
+            
+#            # Get more info from the actual file.
+#            iptc_info = self._get_iptcinfo(self._get_local_filename_for_image(image))
         # Info in file (iptc_info) overrides info from immich (immich_info)
-        image_info = {**immich_info, **iptc_info}
+ #       image_info = {**immich_info, **iptc_info}
+        image_info = immich_info
         return image_info
 
     def _get_iptcinfo(self, filename):
@@ -465,6 +468,7 @@ class Screensaver(xbmcgui.WindowXMLDialog):
         except:
             pass
 
+    #---------------------------------------------------------
     def _api_call(self, action, path, payload=None):
         response = {}
         try:

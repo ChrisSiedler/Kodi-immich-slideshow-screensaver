@@ -6,7 +6,7 @@
 				<setting id="URL" label="30100" help="30101" type="string">
 					<description>URL</description>
 					<level>0</level>
-					<default>http://fontesnas:2283</default>
+					<default>https://immich.server.com</default>
 					<control type="edit" format="string"/>
 				</setting>
 				<setting id="APIKey" label="30110" help="30111" type="string">
