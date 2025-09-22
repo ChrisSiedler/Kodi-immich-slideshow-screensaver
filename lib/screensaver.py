@@ -59,23 +59,36 @@ import xbmcvfs
 
 ADDON = xbmcaddon.Addon()
 ADDON_ID = ADDON.getAddonInfo('id')
-ADDON_USERDATA_FOLDER = xbmcvfs.translatePath("special://profile/addon_data/"+ADDON_ID)+'/'
+#ADDON_USERDATA_FOLDER = xbmcvfs.translatePath("special://profile/addon_data/"+ADDON_ID)+'/'
 
+# Store the downloads in /tmp (ramdrive)
+ADDON_USERDATA_FOLDER = "/tmp/kodi-immich-slideshow/"
+
+if not os.path.exists(ADDON_USERDATA_FOLDER):
+    os.makedirs(ADDON_USERDATA_FOLDER, exist_ok=True)
+    
 def log(msg, level=xbmc.LOGINFO):
         filename = os.path.basename(sys._getframe(1).f_code.co_filename)
         lineno  = str(sys._getframe(1).f_lineno)
         xbmc.log(str("[%s] line %5d in %s >> %s"%(ADDON.getAddonInfo('name'), int(lineno), filename, msg.__str__())), level)
 
 # Formats that can be displayed in a slideshow
-PICTURE_FORMATS = ('bmp', 'jpeg', 'jpg', 'gif', 'png', 'tiff', 'mng', 'ico', 'pcx', 'tga')
+PICTURE_FORMATS = ('bmp', 'jpeg', 'jpg', 'gif', 'png', 'tiff', 'mng', 'ico', 'pcx', 'tga', 'webp')
 
 # Slide transition
 FADEOUT_EFFECT = [['conditional', 'effect=fade start=100 end=0 time=2500 reversible=false condition=true']]
-FADEIN_EFFECT = [['conditional', 'effect=fade start=0 end=100 time=2500 reversible=false condition=true']]
+FADEIN_EFFECT  = [['conditional', 'effect=fade start=0 end=100 time=2500 reversible=false condition=true']]
 # Burst mode transition
 NO_EFFECT = []
 
 IMMICH_TEMP_FILE_EXTENSION = '.immich-tmp'
+
+IMG_SIZE = "preview"
+searchfilter = {"isFavorite": True, "isMotion": False, "type": "IMAGE"}
+
+# use system settings for date and time format
+date_fmt = xbmc.getRegion('dateshort')
+time_fmt = xbmc.getRegion('time')
 
 class Screensaver(xbmcgui.WindowXMLDialog):
     def __init__(self, *args, **kwargs):
@@ -176,7 +189,8 @@ class Screensaver(xbmcgui.WindowXMLDialog):
                 for image in image_group:
                     image_uuid = image[1]
                     local_img_name = ADDON_USERDATA_FOLDER+image_uuid+IMMICH_TEMP_FILE_EXTENSION
-                    if not self._download_file(f'{self.slideshow_URL}/api/assets/{image_uuid}/original', local_img_name):
+#                    if not self._download_file(f'{self.slideshow_URL}/api/assets/{image_uuid}/original', local_img_name):
+                    if not self._download_file(f'{self.slideshow_URL}/api/assets/{image_uuid}/thumbnail?size={IMG_SIZE}', local_img_name):
                         # Download failed, go to next image
                         continue
 
@@ -237,7 +251,11 @@ class Screensaver(xbmcgui.WindowXMLDialog):
         # Get all of the pictures taken on the chosen date.
         takenAfter = chosen_date+'T00:00:00.000Z'
         takenBefore = chosen_date+'T23:59:59.999Z'
-        payload = json.dumps({"takenAfter": takenAfter, "takenBefore": takenBefore, "size": 1000})
+        
+        d = searchfilter.copy()
+        d.update({"takenAfter": takenAfter, "takenBefore": takenBefore, "size": 1000})
+        
+        payload = json.dumps(d)
         all_images_for_date=[]
         more = True
         while more:
@@ -304,17 +322,14 @@ class Screensaver(xbmcgui.WindowXMLDialog):
 
     def _get_random_date(self):
         # Just get one random picture
-        response = self._api_call("POST", "/api/search/random", json.dumps({"size": 1}))
+        
+        d = searchfilter.copy()
+        d.update({"size": 1})
+        
+        response = self._api_call("POST", "/api/search/random", json.dumps(d))
         # Get the date that the picture was taken
         chosen_date = response[0]['localDateTime'][:10]
         # chosen_date = "2022-06-21"
-        # chosen_date = "2017-08-03"
-        # chosen_date = "2001-06-02"
-        # chosen_date = "2017-06-08"
-        # chosen_date = "2013-08-01"
-        # chosen_date = "2021-05-07" # sublocation
-        # chosen_date = "2021-04-11" # headline
-        # chosen_date = "2010-10-03" # landscape and portrait mixed
         return chosen_date
 
     def _get_local_filename_for_image(self, image):
@@ -377,8 +392,8 @@ class Screensaver(xbmcgui.WindowXMLDialog):
         if self.slideshow_date:
             # Get the date and time the image was taken
             imgdatetime = image[0][:18]
-            immich_info['Date'] = time.strftime('%A %B %e, %Y',time.strptime(imgdatetime, '%Y-%m-%dT%H:%M:%S'))
-            immich_info['Time'] = time.strftime('%I:%M %p',time.strptime(imgdatetime, '%Y-%m-%dT%H:%M:%S'))
+            immich_info['Date'] = time.strftime(date_fmt, time.strptime(imgdatetime, '%Y-%m-%dT%H:%M:%S'))
+            immich_info['Time'] = time.strftime(time_fmt, time.strptime(imgdatetime, '%Y-%m-%dT%H:%M:%S'))
         if self.slideshow_tags:
             # Get info about image from the immich API
             response = self._api_call("GET", "/api/assets/"+image[1], json.dumps({}))
