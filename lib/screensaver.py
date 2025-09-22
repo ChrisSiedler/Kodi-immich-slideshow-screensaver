@@ -189,7 +189,7 @@ class Screensaver(xbmcgui.WindowXMLDialog):
                 for image in image_group:
                     image_uuid = image[1]
                     local_img_name = ADDON_USERDATA_FOLDER+image_uuid+IMMICH_TEMP_FILE_EXTENSION
-                    if not self._download_picture(image_uuid, local_img_name, IMG_SIZE)
+                    if not self._download_picture(image_uuid, local_img_name, IMG_SIZE):
                         # Download failed, go to next image
                         continue
 
@@ -429,19 +429,19 @@ class Screensaver(xbmcgui.WindowXMLDialog):
     # ---------------------------------------------------------------------------
     # Utility functions
     def _download_picture(self, image_uuid, local_filename, size="preview"):
-	    # size: [original, fullsize, preview, thumbnail]
-	    # preview: 1440p
+        # size: [original, fullsize, preview, thumbnail]
+        # preview: 1440p
 
-	    if size=="original":
-		    url = f"{self.base_url}/api/assets/{image_uuid}/original"
-	    else:
-		    url = f"{self.base_url}/api/assets/{image_uuid}/thumbnail?size={size}"
-	    
-	    headers = {
-		    "x-api-key": self.api_key,
-		    "Accept": "application/octet-stream"
-		    }
-		    
+        if size=="original":
+            url = f"{self.base_url}/api/assets/{image_uuid}/original"
+        else:
+            url = f"{self.base_url}/api/assets/{image_uuid}/thumbnail?size={size}"
+
+        headers = {
+            "x-api-key": self.api_key,
+            "Accept": "application/octet-stream"
+            }
+            
         try:
             with requests.get(url, stream=True, headers=headers) as r:
                 r.raise_for_status()
