@@ -189,8 +189,7 @@ class Screensaver(xbmcgui.WindowXMLDialog):
                 for image in image_group:
                     image_uuid = image[1]
                     local_img_name = ADDON_USERDATA_FOLDER+image_uuid+IMMICH_TEMP_FILE_EXTENSION
-#                    if not self._download_file(f'{self.slideshow_URL}/api/assets/{image_uuid}/original', local_img_name):
-                    if not self._download_file(f'{self.slideshow_URL}/api/assets/{image_uuid}/thumbnail?size={IMG_SIZE}', local_img_name):
+                    if not self._download_picture(image_uuid, local_img_name, IMG_SIZE)
                         # Download failed, go to next image
                         continue
 
@@ -255,18 +254,17 @@ class Screensaver(xbmcgui.WindowXMLDialog):
         d = searchfilter.copy()
         d.update({"takenAfter": takenAfter, "takenBefore": takenBefore, "size": 1000})
         
-        payload = json.dumps(d)
         all_images_for_date=[]
         more = True
         while more:
-            response = self._api_call("POST", "/api/search/metadata", payload)
+            response = self._api_call("POST", "/api/search/metadata", d)
             # Store (Datetime, id, filename, path to file)
             for item in response['assets']['items']:
                 # Make sure only displayable pictures are used - check mimetype of each item
                 if item["originalMimeType"].lower().endswith(PICTURE_FORMATS):
                     all_images_for_date.append((item['localDateTime'],item["id"],item['originalFileName'],item['originalPath']))
             if response['assets']['nextPage']:
-                payload = json.dumps({"takenAfter": takenAfter, "takenBefore": takenBefore, "size": 1000, "page": response['assets']['nextPage']})
+                d["page"] = response['assets']['nextPage']
             else:
                 more = False
 
@@ -326,14 +324,13 @@ class Screensaver(xbmcgui.WindowXMLDialog):
         d = searchfilter.copy()
         d.update({"size": 1})
         
-        response = self._api_call("POST", "/api/search/random", json.dumps(d))
+        response = self._api_call("POST", "/api/search/random", d)
         # Get the date that the picture was taken
         chosen_date = response[0]['localDateTime'][:10]
         # chosen_date = "2022-06-21"
         return chosen_date
 
     def _get_local_filename_for_image(self, image):
-        # We store the downloaded images in the addon's userdata folder
         return ADDON_USERDATA_FOLDER+image[1]+IMMICH_TEMP_FILE_EXTENSION
 
     def _set_info_fields(self, image, transition=True):
@@ -396,7 +393,7 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             immich_info['Time'] = time.strftime(time_fmt, time.strptime(imgdatetime, '%Y-%m-%dT%H:%M:%S'))
         if self.slideshow_tags:
             # Get info about image from the immich API
-            response = self._api_call("GET", "/api/assets/"+image[1], json.dumps({}))
+            response = self._api_call("GET", "/api/assets/"+image[1])
             exifinfo = response['exifInfo']
             immich_info['Country'] = exifinfo['country']
             immich_info['State'] = exifinfo['state']
@@ -429,10 +426,24 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             pass
         return iptc_info
 
+    # ---------------------------------------------------------------------------
     # Utility functions
-    def _download_file(self, url, local_filename):
+    def _download_picture(self, image_uuid, local_filename, size="preview"):
+	    # size: [original, fullsize, preview, thumbnail]
+	    # preview: 1440p
+
+	    if size=="original":
+		    url = f"{self.base_url}/api/assets/{image_uuid}/original"
+	    else:
+		    url = f"{self.base_url}/api/assets/{image_uuid}/thumbnail?size={size}"
+	    
+	    headers = {
+		    "x-api-key": self.api_key,
+		    "Accept": "application/octet-stream"
+		    }
+		    
         try:
-            with requests.get(url, stream=True, headers={'x-api-key': self.slideshow_APIKey}) as r:
+            with requests.get(url, stream=True, headers=headers) as r:
                 r.raise_for_status()
                 with open(local_filename, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
@@ -441,12 +452,13 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             while not os.path.exists(local_filename):
                 xbmc.sleep(100)
                 attempts += 1
-                if attempts > 100:
+                if attempts > 5:
                     return False
             return True
         except:
             return False
-
+			
+    #---------------------------------------------------------
     def _delete_temporary_files(self, exiting=False):
         try:
             for filename in glob.glob(ADDON_USERDATA_FOLDER+'*'+IMMICH_TEMP_FILE_EXTENSION):
@@ -455,7 +467,7 @@ class Screensaver(xbmcgui.WindowXMLDialog):
         except:
             pass
 
-    def _api_call(self, action, api, payload):
+    def _api_call(self, action, api, payload=None):
         response = {}
         try:
             headers = {
@@ -463,7 +475,8 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             'Accept': 'application/json',
             'x-api-key': self.slideshow_APIKey
             }
-            resp = requests.request(action, self.slideshow_URL+api, headers=headers, data=payload)
+            
+            resp = requests.request(action, self.slideshow_URL+api, headers=headers, json=payload)
             response = json.loads(resp.text)
             if resp.status_code == 401:
                 self.stop = True;
