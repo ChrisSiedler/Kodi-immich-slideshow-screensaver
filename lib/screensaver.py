@@ -42,23 +42,18 @@
 import os
 import glob
 import sys
-import random
-import time
-from datetime import datetime
-import json
+from datetime import datetime,timedelta,time
 import requests
-from iptcinfo3 import IPTCInfo
-# Turn off all the warnings from IPTCInfo
 import logging
-logging.getLogger("iptcinfo").setLevel(logging.DEBUG)
 
 import xbmc
 import xbmcgui
-import xbmcaddon
-import xbmcvfs
 
+
+import xbmcaddon
 ADDON = xbmcaddon.Addon()
 ADDON_ID = ADDON.getAddonInfo('id')
+#import xbmcvfs
 #ADDON_USERDATA_FOLDER = xbmcvfs.translatePath("special://profile/addon_data/"+ADDON_ID)+'/'
 
 # Store the downloads in /tmp (ramdrive)
@@ -85,7 +80,6 @@ IMMICH_TEMP_FILE_EXTENSION = '.immich-tmp'
 
 IMG_SIZE = "preview"
 searchfilter = {"isFavorite": True, "isMotion": False, "type": "IMAGE"}
-Batch_Size=20
 
 # use system settings for date and time format
 date_fmt = xbmc.getRegion('dateshort')
@@ -188,8 +182,8 @@ class Screensaver(xbmcgui.WindowXMLDialog):
 
                 # iterate through all the images in the group
                 for image in image_group:
-                    image_uuid = image[1]
-                    local_img_name = self._get_local_filename_for_image(image)
+                    image_uuid = image['id']
+                    local_img_name = ADDON_USERDATA_FOLDER+image["id"]+IMMICH_TEMP_FILE_EXTENSION
                     if not self._download_picture(image_uuid, local_img_name, IMG_SIZE):
                         # Download failed, go to next image
                         continue
@@ -253,26 +247,31 @@ class Screensaver(xbmcgui.WindowXMLDialog):
         a1 = self._getAllAlbums(d1['id']) 
         if a1:  # yes part of an album
             #print(a1[0]['albumName'])
-            d2 = self._get_random_Asset({"size": Batch_Size, 'albumIds': [a1[0]['id']]})
+            d2 = self._get_random_Asset({"size": self.slideshow_limit, 'albumIds': [a1[0]['id']]})
+            
+            for x in d2:
+                x["albumName"] = a1[0]['albumName']
 
         else: # no get some random pictures from the same day
             #print('no albums')
             # Get all of the pictures taken on the chosen date.
 
             myfilter = searchfilter.copy()
-            t = d1['localDateTime'][:10]   
-            myfilter.update({"takenAfter": t+'T00:00:00.000Z', "takenBefore": t+'T23:59:59.999Z', "size": Batch_Size})
+            dt = datetime.fromisoformat(d1['localDateTime'])
+            tmin = datetime.combine(dt.date(), time.min, tzinfo=dt.tzinfo)
+            tmax = datetime.combine(dt.date(), time.max, tzinfo=dt.tzinfo)
+            myfilter.update({"takenBefore": tmin, "takenAfter": tmax, "size": self.slideshow_limit})
 
             d2 = self._get_random_Asset(myfilter)
 
         logging.info(d2)
         all_images_for_date=[]
-        
+
         # Sort the pictures:
         for item in self._Sort_Asset(d2):
             if item["originalMimeType"].lower().endswith(PICTURE_FORMATS):
-                all_images_for_date.append((item['localDateTime'],item["id"],item['originalFileName'],item['originalPath']))
-
+        #                all_images_for_date.append((item['localDateTime'],item["id"],item['originalFileName'],item['originalPath']))
+                all_images_for_date.append(item)
 
         if len(all_images_for_date) == 0:
             # No displayable pictures found for this date
@@ -283,14 +282,17 @@ class Screensaver(xbmcgui.WindowXMLDialog):
         # Put the first picture in the first group
         image_groupings=[[all_images_for_date[0]]]
         # Get date and time with milliseconds, but without time zone
-        image_datetime = all_images_for_date[0][0][:23]
-        prev_image_date_object = datetime.fromtimestamp(time.mktime(time.strptime(image_datetime, '%Y-%m-%dT%H:%M:%S.%f')))
+        #        image_datetime = all_images_for_date[0][0][:23]
+        #        prev_image_date_object = datetime.fromtimestamp(time.mktime(time.strptime(image_datetime, '%Y-%m-%dT%H:%M:%S.%f')))
+        prev_image_date_object = datetime.fromisoformat(all_images_for_date[0]['localDateTime'])
         # Go through the rest of the images
         image_index = 1
         while image_index < len(all_images_for_date):
             # Get date and time with milliseconds, but without time zone
-            image_datetime = all_images_for_date[image_index][0][:23]
-            this_image_date_object = datetime.fromtimestamp(time.mktime(time.strptime(image_datetime, '%Y-%m-%dT%H:%M:%S.%f')))
+        #            image_datetime = all_images_for_date[image_index][0][:23]
+        #            this_image_date_object = datetime.fromtimestamp(time.mktime(time.strptime(image_datetime, '%Y-%m-%dT%H:%M:%S.%f')))
+            this_image_date_object = datetime.fromisoformat(all_images_for_date[image_index]['localDateTime'])
+            
             # Calculate difference between when this picture was taken and when the last picture was taken
             datediff = this_image_date_object - prev_image_date_object
             if datediff.total_seconds() <= 2:
@@ -312,19 +314,9 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             image_index+=1
 
         # Return the requested number of pictures
-        if self.slideshow_limit == 0 or (len(image_groupings) <= self.slideshow_limit):
-            # Fewer picture for this date than max allowed, so display them all
-            return image_groupings
-        else:
-            # More pictures on this date than the max allowed
-            # Set a random offset into the list of pictures so we don't always start wtih the earliest picture on the date.
-            offset = random.randrange(len(image_groupings) - self.slideshow_limit)
+        return image_groupings
 
-            return image_groupings[offset:offset+self.slideshow_limit]
     #----------------------------------------------------------------------
-    def _get_local_filename_for_image(self, image):
-        return ADDON_USERDATA_FOLDER+image[1]+IMMICH_TEMP_FILE_EXTENSION
-
     def _set_info_fields(self, image, transition=True):
         # Get info about the image
         info = self._get_image_info(image)
@@ -335,38 +327,11 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             xbmc.sleep(750)
 
         # Assign whatever info was found into the correct labels
-        if 'Headline' in info:
-            self._set_prop('Headline',info['Headline'])
-        else:
-            self._clear_prop('Headline')
-        if 'Caption' in info:
-            self._set_prop('Caption',info['Caption'])
-        else:
-            self._clear_prop('Caption')
-        if 'Sublocation' in info:
-            self._set_prop('Sublocation',info['Sublocation'])
-        else:
-            self._clear_prop('Sublocation')
-        if 'City' in info:
-            self._set_prop('City',info['City'])
-        else:
-            self._clear_prop('City')
-        if 'State' in info:
-            self._set_prop('State',info['State'])
-        else:
-            self._clear_prop('State')
-        if 'Country' in info:
-            self._set_prop('Country',info['Country'])
-        else:
-            self._clear_prop('Country')
-        if 'Date' in info:
-            self._set_prop('Date',info['Date'])
-        else:
-            self._clear_prop('Date')
-        if 'Time' in info:
-            self._set_prop('Time',info['Time'])
-        else:
-            self._clear_prop('Time')
+        for x in ['Headline', 'Caption', 'Sublocation', 'City', 'State', 'Country', 'Date', 'Time']:
+            if x in info:
+                self._set_prop(x, info[x])
+            else:
+                self._clear_prop(x)
 
         # Complete the transition to the new set of info
         if transition:
@@ -374,24 +339,28 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             xbmc.sleep(750)
         self._set_prop('FadeoutLabels', '0')
 
+    #----------------------------------------------------------------------
     def _get_image_info(self, image):
         immich_info = {}
-        iptc_info = {}
+
         # Get all of the info for this image
         if self.slideshow_date:
             # Get the date and time the image was taken
-            imgdatetime = image[0][:18]
-            immich_info['Date'] = time.strftime(date_fmt, time.strptime(imgdatetime, '%Y-%m-%dT%H:%M:%S'))
-            immich_info['Time'] = time.strftime(time_fmt, time.strptime(imgdatetime, '%Y-%m-%dT%H:%M:%S'))
+            dt = datetime.fromisoformat(image['localDateTime'])
+            immich_info['Date'] = dt.strftime(date_fmt)
+            immich_info['Time'] = dt.strftime(time_fmt)
         if self.slideshow_tags:
             # Get info about image from the immich API
-            response = self._api_call("GET", "assets/"+image[1])
-            exifinfo = response['exifInfo']
-            immich_info['Country'] = exifinfo['country']
-            immich_info['State'] = exifinfo['state']
-            immich_info['City'] = exifinfo['city']
-            immich_info['Caption'] = exifinfo['description']
+            AssetInfo = self._getAssetInfo(image["id"])
+            exifinfo = AssetInfo['exifInfo']
+            immich_info['Country']  = exifinfo['country']
+            immich_info['State']    = exifinfo['state']
+            immich_info['City']     = exifinfo['city']
+            immich_info['Caption']  = exifinfo['description']
             immich_info['Headline'] = response['originalFileName']
+            
+        if 'albumName' in image:
+            immich_info['Headline'] = image['albumName']
             
 #            # Get more info from the actual file.
 #            iptc_info = self._get_iptcinfo(self._get_local_filename_for_image(image))
@@ -399,27 +368,6 @@ class Screensaver(xbmcgui.WindowXMLDialog):
  #       image_info = {**immich_info, **iptc_info}
         image_info = immich_info
         return image_info
-
-    def _get_iptcinfo(self, filename):
-        # Retrieve info directly from the file
-        iptc_info = {}
-        try:
-            iptc = IPTCInfo(filename)
-            if iptc['headline']:
-                iptc_info['Headline'] = iptc['headline']
-            if iptc['caption/abstract']:
-                iptc_info['Caption'] = iptc['caption/abstract']
-            if iptc['sub-location']:
-                iptc_info['Sublocation'] = iptc['sub-location']
-            if iptc['city']:
-                iptc_info['City'] = iptc['city']
-            if iptc['province/state']:
-                iptc_info['State'] = iptc['province/state']
-            if iptc['country/primary location name']:
-                iptc_info['Country'] = iptc['country/primary location name']
-        except:
-            pass
-        return iptc_info
 
     # ---------------------------------------------------------------------------
     # Utility functions
@@ -457,7 +405,7 @@ class Screensaver(xbmcgui.WindowXMLDialog):
     def _delete_temporary_files(self, exiting=False):
         try:
             for filename in glob.glob(ADDON_USERDATA_FOLDER+'*'+IMMICH_TEMP_FILE_EXTENSION):
-                if exiting or (os.path.getmtime(filename) < (time.time() - (self.slideshow_time*30))):
+                if exiting or (os.path.getmtime(filename) < (datetime.now()- timedelta(hours=3))):
                     os.remove(filename)
         except:
             pass
@@ -466,7 +414,6 @@ class Screensaver(xbmcgui.WindowXMLDialog):
     def _api_call(self, action, path, payload=None):
         response = {}
         try:
-        
             url = f"{self.slideshow_URL}/api/{path}"
         
             headers = {
@@ -477,6 +424,7 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             
             resp = requests.request(action, url, headers=headers, json=payload)
             response = resp.json()
+            
             if resp.status_code == 401:
                 self.stop = True;
                 raise SlideshowException(ADDON.getLocalizedString(30420),ADDON.getLocalizedString(30430),response)
@@ -490,7 +438,7 @@ class Screensaver(xbmcgui.WindowXMLDialog):
         return response
 
     #---------------------------------------------------------
-    def _get_random_Asset(self, filter={"size": 1}):
+    def _get_random_Asset(self, filter={"size": 1}):    
 	    # Just get one random picture
 	    
 	    d = searchfilter.copy()
@@ -505,16 +453,12 @@ class Screensaver(xbmcgui.WindowXMLDialog):
 	    
     #---------------------------------------------------------
     def _getAllAlbums(self, assetId):
-			    
 	    response = self._api_call("GET", f"albums?assetId={assetId}")
 	    return response
 	    
     #---------------------------------------------------------
     def _getAssetInfo(self, assetId):
-
-	    response = self._api_call("GET", f"assets/{assetId}")
-	    return response
-
+	    return self._api_call("GET", f"assets/{assetId}")
 
     #---------------------------------------------------------
     def _set_prop(self, name, value):
@@ -536,14 +480,8 @@ class Screensaver(xbmcgui.WindowXMLDialog):
         self._clear_prop('Clock')
         self._clear_prop('Splash')
         self._clear_prop('SkinName')
-        self._clear_prop('Headline')
-        self._clear_prop('Caption')
-        self._clear_prop('Sublocation')
-        self._clear_prop('City')
-        self._clear_prop('State')
-        self._clear_prop('Country')
-        self._clear_prop('Date')
-        self._clear_prop('Time')
+        for x in ['Headline', 'Caption', 'Sublocation', 'City', 'State', 'Country', 'Date', 'Time']:
+             self._clear_prop(x)
         self.close()
 
 class SlideshowException(Exception):
