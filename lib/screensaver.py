@@ -85,6 +85,7 @@ IMMICH_TEMP_FILE_EXTENSION = '.immich-tmp'
 
 IMG_SIZE = "preview"
 searchfilter = {"isFavorite": True, "isMotion": False, "type": "IMAGE"}
+Batch_Size=20
 
 # use system settings for date and time format
 date_fmt = xbmc.getRegion('dateshort')
@@ -243,24 +244,32 @@ class Screensaver(xbmcgui.WindowXMLDialog):
                     self.stop = True
                     break
 
+    #----------------------------------------------------------------------
     def _get_image_groupings(self, update=False):
-        # Ask for a random date
-        chosen_date = self._get_random_date()
+        # get random Asset
+        d1 = self._get_random_Asset()[0]
 
-        # Get all of the pictures taken on the chosen date.
-        takenAfter = chosen_date+'T00:00:00.000Z'
-        takenBefore = chosen_date+'T23:59:59.999Z'
-        
-        d = searchfilter.copy()
-        d.update({"takenAfter": takenAfter, "takenBefore": takenBefore, "size": 100})
-        
+        # is it part of an Album?
+        a1 = self._getAllAlbums(d1['id']) 
+        if a1:  # yes part of an album
+            #print(a1[0]['albumName'])
+            d2 = self._get_random_Asset({"size": Batch_Size, 'albumIds': [a1[0]['id']]})
+
+        else: # no get some random pictures from the same day
+            #print('no albums')
+            # Get all of the pictures taken on the chosen date.
+
+            myfilter = searchfilter.copy()
+            t = d1['localDateTime'][:10]   
+            myfilter.update({"takenAfter": t+'T00:00:00.000Z', "takenBefore": t+'T23:59:59.999Z', "size": Batch_Size})
+
+            d2 = self._get_random_Asset(myfilter)
+
+        logging.info(d2)
         all_images_for_date=[]
-
-        response = self._api_call("POST", "search/metadata", d)
-        logging.info(response)
-        # Store (Datetime, id, filename, path to file)
-        for item in response['assets']['items']:
-            # Make sure only displayable pictures are used - check mimetype of each item
+        
+        # Sort the pictures:
+        for item in self._Sort_Asset(d2):
             if item["originalMimeType"].lower().endswith(PICTURE_FORMATS):
                 all_images_for_date.append((item['localDateTime'],item["id"],item['originalFileName'],item['originalPath']))
 
@@ -268,9 +277,6 @@ class Screensaver(xbmcgui.WindowXMLDialog):
         if len(all_images_for_date) == 0:
             # No displayable pictures found for this date
             return []
-
-        #Sort by time, break ties with filename - pictures taken same second are ordered correctly
-        all_images_for_date.sort(key=lambda x: (x[0],x[2]))
 
         # Group together pictures taken in burst mode
         group_index = 0
@@ -313,21 +319,9 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             # More pictures on this date than the max allowed
             # Set a random offset into the list of pictures so we don't always start wtih the earliest picture on the date.
             offset = random.randrange(len(image_groupings) - self.slideshow_limit)
+
             return image_groupings[offset:offset+self.slideshow_limit]
-
-    def _get_random_date(self):
-        # Just get one random picture
-        
-        d = searchfilter.copy()
-        d.update({"size": 1})
-        
-        response = self._api_call("POST", "search/random", d)
-        # Get the date that the picture was taken
-        chosen_date = response[0]['localDateTime'][:10]
-        # chosen_date = "2022-06-21"
-        logging.info(f"will use random date: {chosen_date}")
-        return chosen_date
-
+    #----------------------------------------------------------------------
     def _get_local_filename_for_image(self, image):
         return ADDON_USERDATA_FOLDER+image[1]+IMMICH_TEMP_FILE_EXTENSION
 
@@ -482,7 +476,7 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             }
             
             resp = requests.request(action, url, headers=headers, json=payload)
-            response = json.loads(resp.text)
+            response = resp.json()
             if resp.status_code == 401:
                 self.stop = True;
                 raise SlideshowException(ADDON.getLocalizedString(30420),ADDON.getLocalizedString(30430),response)
@@ -495,6 +489,34 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             raise SlideshowException(ADDON.getLocalizedString(30400), str(ce))
         return response
 
+    #---------------------------------------------------------
+    def _get_random_Asset(self, filter={"size": 1}):
+	    # Just get one random picture
+	    
+	    d = searchfilter.copy()
+	    d.update(filter)
+	    
+	    response = self._api_call("POST", "search/random", d)
+	    return response
+	    
+    #---------------------------------------------------------
+    def _Sort_Asset(self, indata, sortkey='localDateTime'):
+	    return sorted(indata, key=lambda d: d[sortkey])
+	    
+    #---------------------------------------------------------
+    def _getAllAlbums(self, assetId):
+			    
+	    response = self._api_call("GET", f"albums?assetId={assetId}")
+	    return response
+	    
+    #---------------------------------------------------------
+    def _getAssetInfo(self, assetId):
+
+	    response = self._api_call("GET", f"assets/{assetId}")
+	    return response
+
+
+    #---------------------------------------------------------
     def _set_prop(self, name, value):
         self.winid.setProperty('Screensaver.%s' % name, value)
 
