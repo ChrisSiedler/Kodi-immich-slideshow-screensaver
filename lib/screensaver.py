@@ -182,9 +182,13 @@ class Screensaver(xbmcgui.WindowXMLDialog):
 
                 # iterate through all the images in the group
                 for image in image_group:
-                    image_uuid = image['id']
-                    local_img_name = ADDON_USERDATA_FOLDER+image["id"]+IMMICH_TEMP_FILE_EXTENSION
-                    if not self._download_picture(image_uuid, local_img_name, IMG_SIZE):
+                    local_img_name = ADDON_USERDATA_FOLDER + image["id"] + IMMICH_TEMP_FILE_EXTENSION
+                    
+                    my_IMG_SIZE = IMG_SIZE
+                    if IMG_SIZE == "original" and not image["originalMimeType"].lower().endswith(PICTURE_FORMATS):
+                        my_IMG_SIZE = "fullsize"
+                    
+                    if not self._download_picture(image["id"], local_img_name, my_IMG_SIZE):
                         # Download failed, go to next image
                         continue
 
@@ -265,13 +269,8 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             d2 = self._get_random_Asset(myfilter)
 
         logging.info(d2)
-        all_images_for_date=[]
 
-        # Sort the pictures:
-        for item in self._Sort_Asset(d2):
-            if item["originalMimeType"].lower().endswith(PICTURE_FORMATS):
-        #                all_images_for_date.append((item['localDateTime'],item["id"],item['originalFileName'],item['originalPath']))
-                all_images_for_date.append(item)
+        all_images_for_date = self._Sort_Asset(d2)
 
         if len(all_images_for_date) == 0:
             # No displayable pictures found for this date
@@ -282,15 +281,11 @@ class Screensaver(xbmcgui.WindowXMLDialog):
         # Put the first picture in the first group
         image_groupings=[[all_images_for_date[0]]]
         # Get date and time with milliseconds, but without time zone
-        #        image_datetime = all_images_for_date[0][0][:23]
-        #        prev_image_date_object = datetime.fromtimestamp(time.mktime(time.strptime(image_datetime, '%Y-%m-%dT%H:%M:%S.%f')))
         prev_image_date_object = datetime.fromisoformat(all_images_for_date[0]['localDateTime'])
         # Go through the rest of the images
         image_index = 1
         while image_index < len(all_images_for_date):
             # Get date and time with milliseconds, but without time zone
-        #            image_datetime = all_images_for_date[image_index][0][:23]
-        #            this_image_date_object = datetime.fromtimestamp(time.mktime(time.strptime(image_datetime, '%Y-%m-%dT%H:%M:%S.%f')))
             this_image_date_object = datetime.fromisoformat(all_images_for_date[image_index]['localDateTime'])
             
             # Calculate difference between when this picture was taken and when the last picture was taken
@@ -357,7 +352,7 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             immich_info['State']    = exifinfo['state']
             immich_info['City']     = exifinfo['city']
             immich_info['Caption']  = exifinfo['description']
-            immich_info['Headline'] = response['originalFileName']
+            immich_info['Headline'] = AssetInfo['originalFileName']
             
         if 'albumName' in image:
             immich_info['Headline'] = image['albumName']
@@ -370,7 +365,6 @@ class Screensaver(xbmcgui.WindowXMLDialog):
         return image_info
 
     # ---------------------------------------------------------------------------
-    # Utility functions
     def _download_picture(self, image_uuid, local_filename, size="preview"):
         # size: [original, fullsize, preview, thumbnail]
         # preview: 1440p
@@ -454,7 +448,11 @@ class Screensaver(xbmcgui.WindowXMLDialog):
     #---------------------------------------------------------
     def _getAllAlbums(self, assetId):
 	    response = self._api_call("GET", f"albums?assetId={assetId}")
-	    return response
+	    
+	    blacklist = ['Bilderrahmen']
+	    	    
+	    data = [x for x in response if x['albumName'] not in blacklist]
+	    return data
 	    
     #---------------------------------------------------------
     def _getAssetInfo(self, assetId):
