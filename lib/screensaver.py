@@ -42,40 +42,48 @@
 import os
 import glob
 import sys
-import random
-import time
-from datetime import datetime
-import json
+from datetime import datetime,timedelta,time
 import requests
-from iptcinfo3 import IPTCInfo
-# Turn off all the warnings from IPTCInfo
 import logging
-logging.getLogger("iptcinfo").setLevel(logging.ERROR)
 
 import xbmc
 import xbmcgui
-import xbmcaddon
-import xbmcvfs
 
+
+import xbmcaddon
 ADDON = xbmcaddon.Addon()
 ADDON_ID = ADDON.getAddonInfo('id')
-ADDON_USERDATA_FOLDER = xbmcvfs.translatePath("special://profile/addon_data/"+ADDON_ID)+'/'
+#import xbmcvfs
+#ADDON_USERDATA_FOLDER = xbmcvfs.translatePath("special://profile/addon_data/"+ADDON_ID)+'/'
 
+# Store the downloads in /tmp (ramdrive)
+ADDON_USERDATA_FOLDER = "/tmp/kodi-immich-slideshow/"
+
+if not os.path.exists(ADDON_USERDATA_FOLDER):
+    os.makedirs(ADDON_USERDATA_FOLDER, exist_ok=True)
+    
 def log(msg, level=xbmc.LOGINFO):
         filename = os.path.basename(sys._getframe(1).f_code.co_filename)
         lineno  = str(sys._getframe(1).f_lineno)
         xbmc.log(str("[%s] line %5d in %s >> %s"%(ADDON.getAddonInfo('name'), int(lineno), filename, msg.__str__())), level)
 
 # Formats that can be displayed in a slideshow
-PICTURE_FORMATS = ('bmp', 'jpeg', 'jpg', 'gif', 'png', 'tiff', 'mng', 'ico', 'pcx', 'tga')
+PICTURE_FORMATS = ('bmp', 'jpeg', 'jpg', 'gif', 'png', 'tiff', 'mng', 'ico', 'pcx', 'tga', 'webp')
 
 # Slide transition
 FADEOUT_EFFECT = [['conditional', 'effect=fade start=100 end=0 time=2500 reversible=false condition=true']]
-FADEIN_EFFECT = [['conditional', 'effect=fade start=0 end=100 time=2500 reversible=false condition=true']]
+FADEIN_EFFECT  = [['conditional', 'effect=fade start=0 end=100 time=2500 reversible=false condition=true']]
 # Burst mode transition
 NO_EFFECT = []
 
 IMMICH_TEMP_FILE_EXTENSION = '.immich-tmp'
+
+IMG_SIZE = "preview"
+searchfilter = {"isFavorite": True, "isMotion": False, "type": "IMAGE"}
+
+# use system settings for date and time format
+date_fmt = xbmc.getRegion('dateshort')
+time_fmt = xbmc.getRegion('time')
 
 class Screensaver(xbmcgui.WindowXMLDialog):
     def __init__(self, *args, **kwargs):
@@ -174,9 +182,13 @@ class Screensaver(xbmcgui.WindowXMLDialog):
 
                 # iterate through all the images in the group
                 for image in image_group:
-                    image_uuid = image[1]
-                    local_img_name = ADDON_USERDATA_FOLDER+image_uuid+IMMICH_TEMP_FILE_EXTENSION
-                    if not self._download_file(f'{self.slideshow_URL}/api/assets/{image_uuid}/original', local_img_name):
+                    local_img_name = ADDON_USERDATA_FOLDER + image["id"] + IMMICH_TEMP_FILE_EXTENSION
+                    
+                    my_IMG_SIZE = IMG_SIZE
+                    if IMG_SIZE == "original" and not image["originalMimeType"].lower().endswith(PICTURE_FORMATS):
+                        my_IMG_SIZE = "fullsize"
+                    
+                    if not self._download_picture(image["id"], local_img_name, my_IMG_SIZE):
                         # Download failed, go to next image
                         continue
 
@@ -230,48 +242,52 @@ class Screensaver(xbmcgui.WindowXMLDialog):
                     self.stop = True
                     break
 
+    #----------------------------------------------------------------------
     def _get_image_groupings(self, update=False):
-        # Ask for a random date
-        chosen_date = self._get_random_date()
+        # get random Asset
+        d1 = self._get_random_Asset()[0]
 
-        # Get all of the pictures taken on the chosen date.
-        takenAfter = chosen_date+'T00:00:00.000Z'
-        takenBefore = chosen_date+'T23:59:59.999Z'
-        payload = json.dumps({"takenAfter": takenAfter, "takenBefore": takenBefore, "size": 1000})
-        all_images_for_date=[]
-        more = True
-        while more:
-            response = self._api_call("POST", "/api/search/metadata", payload)
-            # Store (Datetime, id, filename, path to file)
-            for item in response['assets']['items']:
-                # Make sure only displayable pictures are used - check mimetype of each item
-                if item["originalMimeType"].lower().endswith(PICTURE_FORMATS):
-                    all_images_for_date.append((item['localDateTime'],item["id"],item['originalFileName'],item['originalPath']))
-            if response['assets']['nextPage']:
-                payload = json.dumps({"takenAfter": takenAfter, "takenBefore": takenBefore, "size": 1000, "page": response['assets']['nextPage']})
-            else:
-                more = False
+        # is it part of an Album?
+        a1 = self._getAllAlbums(d1['id']) 
+        if a1:  # yes part of an album
+            #print(a1[0]['albumName'])
+            d2 = self._get_random_Asset({"size": self.slideshow_limit, 'albumIds': [a1[0]['id']]})
+            
+            for x in d2:
+                x["albumName"] = a1[0]['albumName']
+
+        else: # no get some random pictures from the same day
+            #print('no albums')
+            # Get all of the pictures taken on the chosen date.
+
+            myfilter = searchfilter.copy()
+            dt = datetime.fromisoformat(d1['localDateTime'])
+            tmin = datetime.combine(dt.date(), time.min, tzinfo=dt.tzinfo)
+            tmax = datetime.combine(dt.date(), time.max, tzinfo=dt.tzinfo)
+            myfilter.update({"takenBefore": tmin, "takenAfter": tmax, "size": self.slideshow_limit})
+
+            d2 = self._get_random_Asset(myfilter)
+
+        logging.info(d2)
+
+        all_images_for_date = self._Sort_Asset(d2)
 
         if len(all_images_for_date) == 0:
             # No displayable pictures found for this date
             return []
-
-        #Sort by time, break ties with filename - pictures taken same second are ordered correctly
-        all_images_for_date.sort(key=lambda x: (x[0],x[2]))
 
         # Group together pictures taken in burst mode
         group_index = 0
         # Put the first picture in the first group
         image_groupings=[[all_images_for_date[0]]]
         # Get date and time with milliseconds, but without time zone
-        image_datetime = all_images_for_date[0][0][:23]
-        prev_image_date_object = datetime.fromtimestamp(time.mktime(time.strptime(image_datetime, '%Y-%m-%dT%H:%M:%S.%f')))
+        prev_image_date_object = datetime.fromisoformat(all_images_for_date[0]['localDateTime'])
         # Go through the rest of the images
         image_index = 1
         while image_index < len(all_images_for_date):
             # Get date and time with milliseconds, but without time zone
-            image_datetime = all_images_for_date[image_index][0][:23]
-            this_image_date_object = datetime.fromtimestamp(time.mktime(time.strptime(image_datetime, '%Y-%m-%dT%H:%M:%S.%f')))
+            this_image_date_object = datetime.fromisoformat(all_images_for_date[image_index]['localDateTime'])
+            
             # Calculate difference between when this picture was taken and when the last picture was taken
             datediff = this_image_date_object - prev_image_date_object
             if datediff.total_seconds() <= 2:
@@ -293,34 +309,9 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             image_index+=1
 
         # Return the requested number of pictures
-        if self.slideshow_limit == 0 or (len(image_groupings) <= self.slideshow_limit):
-            # Fewer picture for this date than max allowed, so display them all
-            return image_groupings
-        else:
-            # More pictures on this date than the max allowed
-            # Set a random offset into the list of pictures so we don't always start wtih the earliest picture on the date.
-            offset = random.randrange(len(image_groupings) - self.slideshow_limit)
-            return image_groupings[offset:offset+self.slideshow_limit]
+        return image_groupings
 
-    def _get_random_date(self):
-        # Just get one random picture
-        response = self._api_call("POST", "/api/search/random", json.dumps({"size": 1}))
-        # Get the date that the picture was taken
-        chosen_date = response[0]['localDateTime'][:10]
-        # chosen_date = "2022-06-21"
-        # chosen_date = "2017-08-03"
-        # chosen_date = "2001-06-02"
-        # chosen_date = "2017-06-08"
-        # chosen_date = "2013-08-01"
-        # chosen_date = "2021-05-07" # sublocation
-        # chosen_date = "2021-04-11" # headline
-        # chosen_date = "2010-10-03" # landscape and portrait mixed
-        return chosen_date
-
-    def _get_local_filename_for_image(self, image):
-        # We store the downloaded images in the addon's userdata folder
-        return ADDON_USERDATA_FOLDER+image[1]+IMMICH_TEMP_FILE_EXTENSION
-
+    #----------------------------------------------------------------------
     def _set_info_fields(self, image, transition=True):
         # Get info about the image
         info = self._get_image_info(image)
@@ -331,38 +322,11 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             xbmc.sleep(750)
 
         # Assign whatever info was found into the correct labels
-        if 'Headline' in info:
-            self._set_prop('Headline',info['Headline'])
-        else:
-            self._clear_prop('Headline')
-        if 'Caption' in info:
-            self._set_prop('Caption',info['Caption'])
-        else:
-            self._clear_prop('Caption')
-        if 'Sublocation' in info:
-            self._set_prop('Sublocation',info['Sublocation'])
-        else:
-            self._clear_prop('Sublocation')
-        if 'City' in info:
-            self._set_prop('City',info['City'])
-        else:
-            self._clear_prop('City')
-        if 'State' in info:
-            self._set_prop('State',info['State'])
-        else:
-            self._clear_prop('State')
-        if 'Country' in info:
-            self._set_prop('Country',info['Country'])
-        else:
-            self._clear_prop('Country')
-        if 'Date' in info:
-            self._set_prop('Date',info['Date'])
-        else:
-            self._clear_prop('Date')
-        if 'Time' in info:
-            self._set_prop('Time',info['Time'])
-        else:
-            self._clear_prop('Time')
+        for x in ['Headline', 'Caption', 'Sublocation', 'City', 'State', 'Country', 'Date', 'Time']:
+            if x in info:
+                self._set_prop(x, info[x])
+            else:
+                self._clear_prop(x)
 
         # Complete the transition to the new set of info
         if transition:
@@ -370,54 +334,53 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             xbmc.sleep(750)
         self._set_prop('FadeoutLabels', '0')
 
+    #----------------------------------------------------------------------
     def _get_image_info(self, image):
         immich_info = {}
-        iptc_info = {}
+
         # Get all of the info for this image
         if self.slideshow_date:
             # Get the date and time the image was taken
-            imgdatetime = image[0][:18]
-            immich_info['Date'] = time.strftime('%A %B %e, %Y',time.strptime(imgdatetime, '%Y-%m-%dT%H:%M:%S'))
-            immich_info['Time'] = time.strftime('%I:%M %p',time.strptime(imgdatetime, '%Y-%m-%dT%H:%M:%S'))
+            dt = datetime.fromisoformat(image['localDateTime'])
+            immich_info['Date'] = dt.strftime(date_fmt)
+            immich_info['Time'] = dt.strftime(time_fmt)
         if self.slideshow_tags:
             # Get info about image from the immich API
-            response = self._api_call("GET", "/api/assets/"+image[1], json.dumps({}))
-            exifinfo = response['exifInfo']
-            immich_info['Country'] = exifinfo['country']
-            immich_info['State'] = exifinfo['state']
-            immich_info['City'] = exifinfo['city']
-            immich_info['Headline'] = exifinfo['description']
-            # Get more info from the actual file.
-            iptc_info = self._get_iptcinfo(self._get_local_filename_for_image(image))
+            AssetInfo = self._getAssetInfo(image["id"])
+            exifinfo = AssetInfo['exifInfo']
+            immich_info['Country']  = exifinfo['country']
+            immich_info['State']    = exifinfo['state']
+            immich_info['City']     = exifinfo['city']
+            immich_info['Caption']  = exifinfo['description']
+            immich_info['Headline'] = AssetInfo['originalFileName']
+            
+        if 'albumName' in image:
+            immich_info['Headline'] = image['albumName']
+            
+#            # Get more info from the actual file.
+#            iptc_info = self._get_iptcinfo(self._get_local_filename_for_image(image))
         # Info in file (iptc_info) overrides info from immich (immich_info)
-        image_info = {**immich_info, **iptc_info}
+ #       image_info = {**immich_info, **iptc_info}
+        image_info = immich_info
         return image_info
 
-    def _get_iptcinfo(self, filename):
-        # Retrieve info directly from the file
-        iptc_info = {}
-        try:
-            iptc = IPTCInfo(filename)
-            if iptc['headline']:
-                iptc_info['Headline'] = iptc['headline']
-            if iptc['caption/abstract']:
-                iptc_info['Caption'] = iptc['caption/abstract']
-            if iptc['sub-location']:
-                iptc_info['Sublocation'] = iptc['sub-location']
-            if iptc['city']:
-                iptc_info['City'] = iptc['city']
-            if iptc['province/state']:
-                iptc_info['State'] = iptc['province/state']
-            if iptc['country/primary location name']:
-                iptc_info['Country'] = iptc['country/primary location name']
-        except:
-            pass
-        return iptc_info
+    # ---------------------------------------------------------------------------
+    def _download_picture(self, image_uuid, local_filename, size="preview"):
+        # size: [original, fullsize, preview, thumbnail]
+        # preview: 1440p
 
-    # Utility functions
-    def _download_file(self, url, local_filename):
+        if size=="original":
+            url = f"{self.slideshow_URL}/api/assets/{image_uuid}/original"
+        else:
+            url = f"{self.slideshow_URL}/api/assets/{image_uuid}/thumbnail?size={size}"
+
+        headers = {
+            "x-api-key": self.slideshow_APIKey,
+            "Accept": "application/octet-stream"
+            }
+            
         try:
-            with requests.get(url, stream=True, headers={'x-api-key': self.slideshow_APIKey}) as r:
+            with requests.get(url, stream=True, headers=headers) as r:
                 r.raise_for_status()
                 with open(local_filename, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
@@ -426,30 +389,36 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             while not os.path.exists(local_filename):
                 xbmc.sleep(100)
                 attempts += 1
-                if attempts > 100:
+                if attempts > 5:
                     return False
             return True
         except:
             return False
-
+			
+    #---------------------------------------------------------
     def _delete_temporary_files(self, exiting=False):
         try:
             for filename in glob.glob(ADDON_USERDATA_FOLDER+'*'+IMMICH_TEMP_FILE_EXTENSION):
-                if exiting or (os.path.getmtime(filename) < (time.time() - (self.slideshow_time*30))):
+                if exiting or (os.path.getmtime(filename) < (datetime.now()- timedelta(hours=3))):
                     os.remove(filename)
         except:
             pass
 
-    def _api_call(self, action, api, payload):
+    #---------------------------------------------------------
+    def _api_call(self, action, path, payload=None):
         response = {}
         try:
+            url = f"{self.slideshow_URL}/api/{path}"
+        
             headers = {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'x-api-key': self.slideshow_APIKey
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'x-api-key': self.slideshow_APIKey
             }
-            resp = requests.request(action, self.slideshow_URL+api, headers=headers, data=payload)
-            response = json.loads(resp.text)
+            
+            resp = requests.request(action, url, headers=headers, json=payload)
+            response = resp.json()
+            
             if resp.status_code == 401:
                 self.stop = True;
                 raise SlideshowException(ADDON.getLocalizedString(30420),ADDON.getLocalizedString(30430),response)
@@ -462,6 +431,34 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             raise SlideshowException(ADDON.getLocalizedString(30400), str(ce))
         return response
 
+    #---------------------------------------------------------
+    def _get_random_Asset(self, filter={"size": 1}):    
+	    # Just get one random picture
+	    
+	    d = searchfilter.copy()
+	    d.update(filter)
+	    
+	    response = self._api_call("POST", "search/random", d)
+	    return response
+	    
+    #---------------------------------------------------------
+    def _Sort_Asset(self, indata, sortkey='localDateTime'):
+	    return sorted(indata, key=lambda d: d[sortkey])
+	    
+    #---------------------------------------------------------
+    def _getAllAlbums(self, assetId):
+	    response = self._api_call("GET", f"albums?assetId={assetId}")
+	    
+	    blacklist = ['Bilderrahmen']
+	    	    
+	    data = [x for x in response if x['albumName'] not in blacklist]
+	    return data
+	    
+    #---------------------------------------------------------
+    def _getAssetInfo(self, assetId):
+	    return self._api_call("GET", f"assets/{assetId}")
+
+    #---------------------------------------------------------
     def _set_prop(self, name, value):
         self.winid.setProperty('Screensaver.%s' % name, value)
 
@@ -481,14 +478,8 @@ class Screensaver(xbmcgui.WindowXMLDialog):
         self._clear_prop('Clock')
         self._clear_prop('Splash')
         self._clear_prop('SkinName')
-        self._clear_prop('Headline')
-        self._clear_prop('Caption')
-        self._clear_prop('Sublocation')
-        self._clear_prop('City')
-        self._clear_prop('State')
-        self._clear_prop('Country')
-        self._clear_prop('Date')
-        self._clear_prop('Time')
+        for x in ['Headline', 'Caption', 'Sublocation', 'City', 'State', 'Country', 'Date', 'Time']:
+             self._clear_prop(x)
         self.close()
 
 class SlideshowException(Exception):
