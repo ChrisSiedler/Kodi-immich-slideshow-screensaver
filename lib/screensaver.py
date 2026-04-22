@@ -43,6 +43,7 @@ import os
 import glob
 import sys
 from datetime import datetime,timedelta,time
+from collections import deque
 import requests
 import logging
 
@@ -79,7 +80,7 @@ NO_EFFECT = []
 IMMICH_TEMP_FILE_EXTENSION = '.immich-tmp'
 
 IMG_SIZE = "preview"
-searchfilter = {"isFavorite": True, "isMotion": False, "type": "IMAGE"}
+global_filter = {"isFavorite": True, "isMotion": False, "type": "IMAGE"}
 
 # use system settings for date and time format
 date_fmt = xbmc.getRegion('dateshort')
@@ -87,6 +88,8 @@ time_fmt = xbmc.getRegion('time')
 
 class Screensaver(xbmcgui.WindowXMLDialog):
     def __init__(self, *args, **kwargs):
+        self.last_album_ids = deque(maxlen=5)
+        
         pass
 
     def onInit(self):
@@ -244,29 +247,48 @@ class Screensaver(xbmcgui.WindowXMLDialog):
 
     #----------------------------------------------------------------------
     def _get_image_groupings(self, update=False):
-        # get random Asset
-        d1 = self._get_random_Asset()[0]
 
-        # is it part of an Album?
-        a1 = self._getAllAlbums(d1['id']) 
+        max_tries = 10
+        for _ in range(max_tries):
+
+            # get random Asset
+            d1 = self._get_random_Asset()[0]
+
+            # is it part of an Album?
+            a1 = self._getAllAlbums(d1['id'])          
+            
+            if not a1: # no Album
+                break
+                
+            this_album_id = a1[0]['id']
+            if this_album_id in self.last_album_ids:
+                continue
+
+            self.last_album_ids.append(this_album_id)
+            break
+            
+            
         if a1:  # yes part of an album
             #print(a1[0]['albumName'])
-            d2 = self._get_random_Asset({"size": self.slideshow_limit, 'albumIds': [a1[0]['id']]})
+        
+            d2 = self._get_random_Asset({"size": self.slideshow_limit, 'albumIds': [this_album_id]})
             
             for x in d2:
                 x["albumName"] = a1[0]['albumName']
+                
 
         else: # no get some random pictures from the same day
             #print('no albums')
             # Get all of the pictures taken on the chosen date.
 
-            myfilter = searchfilter.copy()
-            dt = datetime.fromisoformat(d1['localDateTime'])
-            tmin = datetime.combine(dt.date(), time.min, tzinfo=dt.tzinfo)
-            tmax = datetime.combine(dt.date(), time.max, tzinfo=dt.tzinfo)
-            myfilter.update({"takenBefore": tmin, "takenAfter": tmax, "size": self.slideshow_limit})
+            this_dt = datetime.fromisoformat(d1['localDateTime'])
 
-            d2 = self._get_random_Asset(myfilter)
+            d2 = self._get_random_Asset({
+                "isNotInAlbum": True,
+                "takenBefore":  datetime.combine(this_dt.date(), time.min, tzinfo=this_dt.tzinfo), 
+                "takenAfter":   datetime.combine(this_dt.date(), time.max, tzinfo=this_dt.tzinfo), 
+                "size":         self.slideshow_limit
+                })
 
         logging.info(d2)
 
@@ -435,7 +457,7 @@ class Screensaver(xbmcgui.WindowXMLDialog):
     def _get_random_Asset(self, filter={"size": 1}):    
 	    # Just get one random picture
 	    
-	    d = searchfilter.copy()
+	    d = global_filter.copy()
 	    d.update(filter)
 	    
 	    response = self._api_call("POST", "search/random", d)
