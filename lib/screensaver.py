@@ -44,24 +44,15 @@ import glob
 import sys
 from datetime import datetime,timedelta,time
 from collections import deque
-import requests
 import logging
 
 import xbmc
 import xbmcgui
-
-
 import xbmcaddon
+
 ADDON = xbmcaddon.Addon()
 ADDON_ID = ADDON.getAddonInfo('id')
-#import xbmcvfs
-#ADDON_USERDATA_FOLDER = xbmcvfs.translatePath("special://profile/addon_data/"+ADDON_ID)+'/'
 
-# Store the downloads in /tmp (ramdrive)
-ADDON_USERDATA_FOLDER = "/tmp/kodi-immich-slideshow/"
-
-if not os.path.exists(ADDON_USERDATA_FOLDER):
-    os.makedirs(ADDON_USERDATA_FOLDER, exist_ok=True)
     
 def log(msg, level=xbmc.LOGINFO):
         filename = os.path.basename(sys._getframe(1).f_code.co_filename)
@@ -77,14 +68,22 @@ FADEIN_EFFECT  = [['conditional', 'effect=fade start=0 end=100 time=2500 reversi
 # Burst mode transition
 NO_EFFECT = []
 
-IMMICH_TEMP_FILE_EXTENSION = '.immich-tmp'
-
-IMG_SIZE = "preview"
-global_filter = {"isFavorite": True, "isMotion": False, "type": "IMAGE"}
 
 # use system settings for date and time format
 date_fmt = xbmc.getRegion('dateshort')
 time_fmt = xbmc.getRegion('time')
+
+
+from lib.immich_api import Immich_API
+IMMICH = Immich_API(
+		ADDON.getSetting('URL'),
+		ADDON.getSetting('APIKey')
+		)
+		
+IMMICH.global_filter = {"isFavorite": True, "isMotion": False, "type": "IMAGE"}
+
+IMG_SIZE = "preview"
+
 
 class Screensaver(xbmcgui.WindowXMLDialog):
     def __init__(self, *args, **kwargs):
@@ -111,9 +110,6 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             xbmc.executebuiltin("Dialog.Close(all)")
             dialog = xbmcgui.Dialog()
             dialog.ok(ADDON_ID, text)
-        finally:
-            # Delete any temporary image files that have been retrieved
-            self._delete_temporary_files(exiting=True)
 
     def _get_settings(self):
         # Read addon settings
@@ -160,7 +156,6 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             image_groupings = self._get_image_groupings()
             for image_group in image_groupings:
                 # Delete any temporary image files that have been retrieved
-                self._delete_temporary_files()
                 fastmode = True if (len(image_group) > 2 and self.slideshow_burst) else False
                 if fastmode:
                     # Found a group of pictures taken in burst mode
@@ -185,25 +180,22 @@ class Screensaver(xbmcgui.WindowXMLDialog):
 
                 # iterate through all the images in the group
                 for image in image_group:
-                    local_img_name = ADDON_USERDATA_FOLDER + image["id"] + IMMICH_TEMP_FILE_EXTENSION
-                    
+
                     my_IMG_SIZE = IMG_SIZE
                     if IMG_SIZE == "original" and not image["originalMimeType"].lower().endswith(PICTURE_FORMATS):
                         my_IMG_SIZE = "fullsize"
+ 
+                    my_img_path = IMMICH.getAssetUrl(image["id"], my_IMG_SIZE)
                     
-                    if not self._download_picture(image["id"], local_img_name, my_IMG_SIZE):
-                        # Download failed, go to next image
-                        continue
-
                     if not fastmode:
                         # Add picture information to slide
                         # Only show label transition animation when changing to a new date
                         self._set_info_fields(image,transition=(image_group == image_groupings[0]))
                         # Add background image to gui
                         if order[0] == 1:
-                            self.background_image1.setImage(local_img_name, False)
+                            self.background_image1.setImage(my_img_path, False)
                         else:
-                            self.background_image2.setImage(local_img_name, False)
+                            self.background_image2.setImage(my_img_path, False)
                         # add fade anim to background images
                         self._set_prop('Fade%d' % order[0], '0')
                         self._set_prop('Fade%d' % order[1], '1')
@@ -212,7 +204,7 @@ class Screensaver(xbmcgui.WindowXMLDialog):
                      # About to show images, so turn off splash screen
                     self._set_prop('Splash', 'hide')
                     current_image_control.setAnimations(animation1)
-                    current_image_control.setImage(local_img_name, False)
+                    current_image_control.setImage(my_img_path, False)
 
                     # define next image
                     if current_image_control == self.image_control1:
@@ -252,10 +244,10 @@ class Screensaver(xbmcgui.WindowXMLDialog):
         for _ in range(max_tries):
 
             # get random Asset
-            d1 = self._get_random_Asset()[0]
+            d1 = IMMICH.get_random_Asset()[0]
 
             # is it part of an Album?
-            a1 = self._getAllAlbums(d1['id'])          
+            a1 = IMMICH.getParrentAlbums(d1['id'])          
             
             if not a1: # no Album
                 break
@@ -271,7 +263,7 @@ class Screensaver(xbmcgui.WindowXMLDialog):
         if a1:  # yes part of an album
             #print(a1[0]['albumName'])
         
-            d2 = self._get_random_Asset({"size": self.slideshow_limit, 'albumIds': [this_album_id]})
+            d2 = IMMICH.get_random_Asset({"size": self.slideshow_limit, 'albumIds': [this_album_id]})
             
             for x in d2:
                 x["albumName"] = a1[0]['albumName']
@@ -283,7 +275,7 @@ class Screensaver(xbmcgui.WindowXMLDialog):
 
             this_dt = datetime.fromisoformat(d1['localDateTime'])
 
-            d2 = self._get_random_Asset({
+            d2 = IMMICH.get_random_Asset({
                 "isNotInAlbum": True,
                 "takenBefore":  datetime.combine(this_dt.date(), time.min, tzinfo=this_dt.tzinfo), 
                 "takenAfter":   datetime.combine(this_dt.date(), time.max, tzinfo=this_dt.tzinfo), 
@@ -368,7 +360,7 @@ class Screensaver(xbmcgui.WindowXMLDialog):
             immich_info['Time'] = dt.strftime(time_fmt)
         if self.slideshow_tags:
             # Get info about image from the immich API
-            AssetInfo = self._getAssetInfo(image["id"])
+            AssetInfo = IMMICH.getAssetInfo(image["id"])
             exifinfo = AssetInfo['exifInfo']
             immich_info['Country']  = exifinfo['country']
             immich_info['State']    = exifinfo['state']
@@ -385,101 +377,11 @@ class Screensaver(xbmcgui.WindowXMLDialog):
  #       image_info = {**immich_info, **iptc_info}
         image_info = immich_info
         return image_info
-
-    # ---------------------------------------------------------------------------
-    def _download_picture(self, image_uuid, local_filename, size="preview"):
-        # size: [original, fullsize, preview, thumbnail]
-        # preview: 1440p
-
-        if size=="original":
-            url = f"{self.slideshow_URL}/api/assets/{image_uuid}/original"
-        else:
-            url = f"{self.slideshow_URL}/api/assets/{image_uuid}/thumbnail?size={size}"
-
-        headers = {
-            "x-api-key": self.slideshow_APIKey,
-            "Accept": "application/octet-stream"
-            }
-            
-        try:
-            with requests.get(url, stream=True, headers=headers) as r:
-                r.raise_for_status()
-                with open(local_filename, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-            attempts = 0
-            while not os.path.exists(local_filename):
-                xbmc.sleep(100)
-                attempts += 1
-                if attempts > 5:
-                    return False
-            return True
-        except:
-            return False
-			
-    #---------------------------------------------------------
-    def _delete_temporary_files(self, exiting=False):
-        try:
-            for filename in glob.glob(ADDON_USERDATA_FOLDER+'*'+IMMICH_TEMP_FILE_EXTENSION):
-                if exiting or (os.path.getmtime(filename) < (datetime.now()- timedelta(hours=3))):
-                    os.remove(filename)
-        except:
-            pass
-
-    #---------------------------------------------------------
-    def _api_call(self, action, path, payload=None):
-        response = {}
-        try:
-            url = f"{self.slideshow_URL}/api/{path}"
-        
-            headers = {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json',
-                'x-api-key': self.slideshow_APIKey
-            }
-            
-            resp = requests.request(action, url, headers=headers, json=payload)
-            response = resp.json()
-            
-            if resp.status_code == 401:
-                self.stop = True;
-                raise SlideshowException(ADDON.getLocalizedString(30420),ADDON.getLocalizedString(30430),response)
-            elif resp.status_code != 200:
-                self.stop = True;
-                raise SlideshowException(ADDON.getLocalizedString(30400),ADDON.getLocalizedString(30410),response)
-        except SlideshowException:
-            raise
-        except requests.exceptions.ConnectionError as ce:
-            raise SlideshowException(ADDON.getLocalizedString(30400), str(ce))
-        return response
-
-    #---------------------------------------------------------
-    def _get_random_Asset(self, filter={"size": 1}):    
-	    # Just get one random picture
-	    
-	    d = global_filter.copy()
-	    d.update(filter)
-	    
-	    response = self._api_call("POST", "search/random", d)
-	    return response
-	    
+    
     #---------------------------------------------------------
     def _Sort_Asset(self, indata, sortkey='localDateTime'):
 	    return sorted(indata, key=lambda d: d[sortkey])
-	    
-    #---------------------------------------------------------
-    def _getAllAlbums(self, assetId):
-	    response = self._api_call("GET", f"albums?assetId={assetId}")
-	    
-	    blacklist = ['Bilderrahmen']
-	    	    
-	    data = [x for x in response if x['albumName'] not in blacklist]
-	    return data
-	    
-    #---------------------------------------------------------
-    def _getAssetInfo(self, assetId):
-	    return self._api_call("GET", f"assets/{assetId}")
-
+	        
     #---------------------------------------------------------
     def _set_prop(self, name, value):
         self.winid.setProperty('Screensaver.%s' % name, value)
